@@ -1,13 +1,14 @@
 {
   "name": "whatsapp-mini-bot",
   "version": "1.0.0",
-  "description": "WhatsApp Bot with Vercel Web QR",
+  "description": "Super Fast Feature-Rich WhatsApp Bot",
   "main": "api/index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
+    "axios": "^1.7.7",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "firebase-admin": "^12.0.0",
