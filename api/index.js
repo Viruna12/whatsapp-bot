@@ -5,9 +5,8 @@ const path = require('path');
 const admin = require('firebase-admin');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Firebase Init
+// Firebase Setup
 let serviceAccount = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
@@ -33,7 +32,7 @@ if (serviceAccount && dbUrl && !admin.apps.length) {
   }
 }
 
-// 1. Web UI එක (QR Code එක Screen එකේ පෙන්වන පිටුව)
+// Web UI
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
@@ -72,7 +71,6 @@ app.get('/', (req, res) => {
     const spinner = document.getElementById('spinner');
     const status = document.getElementById('status');
 
-    // Realtime QR Stream
     const evt = new EventSource('/qr-stream');
 
     evt.onmessage = function(e) {
@@ -106,7 +104,7 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// 2. Realtime QR Stream Endpoint (Dynamic Import & Auto-Sync)
+// QR Stream Endpoint
 app.get('/qr-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -140,17 +138,15 @@ app.get('/qr-stream', async (req, res) => {
     sock.ev.on('connection.update', async (update) => {
       const { connection, qr, lastDisconnect } = update;
 
-      // QR එක Web එකට යැවීම
       if (qr) {
         try {
           const qrDataUrl = await QRCode.toDataURL(qr);
           res.write(`data: ${JSON.stringify({ qr: qrDataUrl })}\n\n`);
         } catch (err) {
-          console.error('QR to DataURL error:', err);
+          console.error('QR Error:', err);
         }
       }
 
-      // Scan වූ පසු Firebase එකට Auto-Upload කිරීම
       if (connection === 'open') {
         if (admin.apps.length) {
           try {
@@ -180,19 +176,12 @@ app.get('/qr-stream', async (req, res) => {
       }
     });
 
-    // Timeout (තත්පර 55කින් Vercel crash වීම වළක්වයි)
-    setTimeout(() => {
-      res.end();
-    }, 55000);
+    setTimeout(() => res.end(), 55000);
 
   } catch (error) {
     res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
     res.end();
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
 });
 
 module.exports = app;
