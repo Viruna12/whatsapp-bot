@@ -16,9 +16,11 @@ const PORT = process.env.PORT || 3000;
 const PREFIX = '.';
 const startTime = Date.now();
 
+// Vercel හිදී /tmp/session, Actions හිදී ./session
+const SESSION_PATH = process.env.VERCEL ? '/tmp/session' : './session';
+
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Dynamic Settings
 let settings = {
   alwaysOnline: true,
   autoStatusSeen: true,
@@ -31,9 +33,9 @@ const messageCache = new Map();
 let sock = null;
 
 async function initBot() {
-  await restoreSession();
+  await restoreSession(SESSION_PATH);
 
-  const { state, saveCreds } = await useMultiFileAuthState('./session');
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
   const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
@@ -46,7 +48,7 @@ async function initBot() {
 
   sock.ev.on('creds.update', async () => {
     await saveCreds();
-    await saveSessionToFirebase();
+    await saveSessionToFirebase(SESSION_PATH);
   });
 
   sock.ev.on('connection.update', async (update) => {
@@ -65,7 +67,7 @@ async function initBot() {
     }
   });
 
-  // Message Events
+  // Message Events (Features + Anti-delete)
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
     const msg = messages[0];
@@ -73,33 +75,29 @@ async function initBot() {
 
     const from = msg.key.remoteJid;
 
-    // 1. Auto Status Seen
+    // Auto Status Seen
     if (from === 'status@broadcast' && settings.autoStatusSeen) {
       await sock.readMessages([msg.key]);
       return;
     }
 
-    // Message Caching for Anti-Delete
+    // Cache message
     messageCache.set(msg.key.id, msg);
     if (messageCache.size > 1500) {
-      const oldestKey = messageCache.keys().next().value;
-      messageCache.delete(oldestKey);
+      const oldest = messageCache.keys().next().value;
+      messageCache.delete(oldest);
     }
 
-    // 2. Anti-Delete Recovery
+    // Anti-Delete Recovery
     if (msg.message.protocolMessage && msg.message.protocolMessage.type === 0) {
       if (settings.antiDelete) {
         const deletedKey = msg.message.protocolMessage.key;
         const saved = messageCache.get(deletedKey.id);
         if (saved) {
           const sender = deletedKey.participant || deletedKey.remoteJid;
-          const text =
-            saved.message.conversation ||
-            saved.message.extendedTextMessage?.text ||
-            '[Media / Sticker]';
-
+          const text = saved.message.conversation || saved.message.extendedTextMessage?.text || '[Media / Sticker]';
           await sock.sendMessage(from, {
-            text: `⚠️ *Deleted Message Detected!*\n\n👤 *Sender:* @${sender.split('@')[0]}\n💬 *Message:* ${text}`,
+            text: `⚠️ *Deleted Message Detected!*\n\n👤 *Sender:* @${sender.split('@')[0]}\n💬 *Text:* ${text}`,
             mentions: [sender]
           });
         }
@@ -109,172 +107,94 @@ async function initBot() {
 
     if (msg.key.fromMe) return;
 
-    // 3. Auto Typing / Recording Presence
-    if (settings.autoTyping) {
-      await sock.sendPresenceUpdate('composing', from);
-    } else if (settings.autoRecording) {
-      await sock.sendPresenceUpdate('recording', from);
-    }
+    // Presence: typing or recording
+    if (settings.autoTyping) await sock.sendPresenceUpdate('composing', from);
+    else if (settings.autoRecording) await sock.sendPresenceUpdate('recording', from);
 
-    const body =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      '';
-
+    const body = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
     if (!body.startsWith(PREFIX)) return;
     const args = body.slice(PREFIX.length).trim().split(/ +/);
     const cmd = args.shift().toLowerCase();
 
-    // 10 Core Commands
+    // 10 Fast Commands
     switch (cmd) {
-      // 1. Menu
       case 'menu':
       case 'help': {
-        const menu =
-          `🤖 *WHATSAPP MINI BOT* 🤖\n\n` +
+        const text = `🤖 *MINI BOT MENU*\n\n` +
           `🔹 *${PREFIX}ping* - Speed test\n` +
-          `🔹 *${PREFIX}alive* - Status check\n` +
-          `🔹 *${PREFIX}runtime* - Bot active time\n` +
-          `🔹 *${PREFIX}system* - RAM & Server stats\n` +
-          `🔹 *${PREFIX}settings* - Toggle bot features\n` +
-          `🔹 *${PREFIX}vv* - Recover View Once media\n` +
+          `🔹 *${PREFIX}alive* - Status\n` +
+          `🔹 *${PREFIX}runtime* - Uptime\n` +
+          `🔹 *${PREFIX}system* - System stats\n` +
+          `🔹 *${PREFIX}settings* - Toggle features\n` +
+          `🔹 *${PREFIX}vv* - Recover View Once\n` +
           `🔹 *${PREFIX}calc <math>* - Calculator\n` +
           `🔹 *${PREFIX}say <text>* - Echo text\n` +
-          `🔹 *${PREFIX}quote* - Motivation quote\n` +
-          `🔹 *${PREFIX}joke* - Random tech joke`;
-        await sock.sendMessage(from, { text: menu }, { quoted: msg });
+          `🔹 *${PREFIX}quote* - Motivation\n` +
+          `🔹 *${PREFIX}joke* - Random joke`;
+        await sock.sendMessage(from, { text }, { quoted: msg });
         break;
       }
-
-      // 2. Ping
       case 'ping': {
         const latency = Date.now() - (msg.messageTimestamp * 1000 || Date.now());
-        await sock.sendMessage(from, { text: `⚡ *Speed:* ${Math.abs(latency)}ms` }, { quoted: msg });
+        await sock.sendMessage(from, { text: `⚡ Speed: ${Math.abs(latency)}ms` }, { quoted: msg });
         break;
       }
-
-      // 3. Alive
       case 'alive': {
-        await sock.sendMessage(from, { text: '🟢 *Bot is active and running at full speed!*' }, { quoted: msg });
+        await sock.sendMessage(from, { text: '🟢 *Bot is Active and Connected!*' }, { quoted: msg });
         break;
       }
-
-      // 4. Runtime
       case 'runtime': {
         const sec = Math.floor((Date.now() - startTime) / 1000);
-        const h = Math.floor(sec / 3600);
-        const m = Math.floor((sec % 3600) / 60);
-        const s = sec % 60;
-        await sock.sendMessage(from, { text: `⏱️ *Uptime:* ${h}h ${m}m ${s}s` }, { quoted: msg });
+        await sock.sendMessage(from, { text: `⏱️ Uptime: ${Math.floor(sec / 60)} minutes` }, { quoted: msg });
         break;
       }
-
-      // 5. System Info
       case 'system': {
-        const free = (os.freemem() / (1024 * 1024)).toFixed(1);
-        const total = (os.totalmem() / (1024 * 1024)).toFixed(1);
-        await sock.sendMessage(from, {
-          text: `💻 *System Details*\n• OS: ${os.platform()}\n• Free RAM: ${free}MB / ${total}MB`
-        }, { quoted: msg });
+        const free = (os.freemem() / (1024 * 1024)).toFixed(0);
+        await sock.sendMessage(from, { text: `💻 Free RAM: ${free}MB` }, { quoted: msg });
         break;
       }
-
-      // 6. View Once Recovery (.vv)
       case 'vv': {
-        const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
-        const viewOnce = quoted?.viewOnceMessageV2?.message || quoted?.viewOnceMessage?.message;
-
-        if (!viewOnce) {
-          return sock.sendMessage(from, { text: '❌ Reply to a View Once image or video with .vv' }, { quoted: msg });
-        }
-
-        const type = Object.keys(viewOnce)[0];
-        const stream = await downloadContentFromMessage(viewOnce[type], type.replace('Message', ''));
+        const q = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
+        const vo = q?.viewOnceMessageV2?.message || q?.viewOnceMessage?.message;
+        if (!vo) return sock.sendMessage(from, { text: 'Reply to a View Once with .vv' }, { quoted: msg });
+        const type = Object.keys(vo)[0];
+        const stream = await downloadContentFromMessage(vo[type], type.replace('Message', ''));
         let buf = Buffer.from([]);
         for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-
-        if (type === 'imageMessage') {
-          await sock.sendMessage(from, { image: buf, caption: '🔓 *View Once Recovered*' }, { quoted: msg });
-        } else if (type === 'videoMessage') {
-          await sock.sendMessage(from, { video: buf, caption: '🔓 *View Once Recovered*' }, { quoted: msg });
-        }
+        if (type === 'imageMessage') await sock.sendMessage(from, { image: buf, caption: '🔓 *View Once Image*' }, { quoted: msg });
+        else if (type === 'videoMessage') await sock.sendMessage(from, { video: buf, caption: '🔓 *View Once Video*' }, { quoted: msg });
         break;
       }
-
-      // 7. Settings
-      case 'settings':
-      case 'setting': {
+      case 'settings': {
         const opt = args[0]?.toLowerCase();
-        if (opt === 'online') {
-          settings.alwaysOnline = !settings.alwaysOnline;
-          await sock.sendPresenceUpdate(settings.alwaysOnline ? 'available' : 'unavailable');
-          await sock.sendMessage(from, { text: `Always Online: *${settings.alwaysOnline}*` });
-        } else if (opt === 'status') {
-          settings.autoStatusSeen = !settings.autoStatusSeen;
-          await sock.sendMessage(from, { text: `Auto Status Seen: *${settings.autoStatusSeen}*` });
-        } else if (opt === 'antidelete') {
-          settings.antiDelete = !settings.antiDelete;
-          await sock.sendMessage(from, { text: `Anti-Delete: *${settings.antiDelete}*` });
-        } else if (opt === 'typing') {
-          settings.autoTyping = !settings.autoTyping;
-          settings.autoRecording = false;
-          await sock.sendMessage(from, { text: `Auto Typing: *${settings.autoTyping}*` });
-        } else if (opt === 'recording') {
-          settings.autoRecording = !settings.autoRecording;
-          settings.autoTyping = false;
-          await sock.sendMessage(from, { text: `Auto Recording: *${settings.autoRecording}*` });
-        } else {
-          const panel =
-            `⚙️ *SETTINGS PANEL*\n\n` +
-            `• Always Online: ${settings.alwaysOnline ? '✅' : '❌'} (\`${PREFIX}settings online\`)\n` +
-            `• Status Seen: ${settings.autoStatusSeen ? '✅' : '❌'} (\`${PREFIX}settings status\`)\n` +
-            `• Anti Delete: ${settings.antiDelete ? '✅' : '❌'} (\`${PREFIX}settings antidelete\`)\n` +
-            `• Auto Typing: ${settings.autoTyping ? '✅' : '❌'} (\`${PREFIX}settings typing\`)\n` +
-            `• Auto Recording: ${settings.autoRecording ? '✅' : '❌'} (\`${PREFIX}settings recording\`)`;
-          await sock.sendMessage(from, { text: panel });
-        }
+        if (opt === 'online') settings.alwaysOnline = !settings.alwaysOnline;
+        else if (opt === 'status') settings.autoStatusSeen = !settings.autoStatusSeen;
+        else if (opt === 'antidelete') settings.antiDelete = !settings.antiDelete;
+        else if (opt === 'typing') { settings.autoTyping = !settings.autoTyping; settings.autoRecording = false; }
+        else if (opt === 'recording') { settings.autoRecording = !settings.autoRecording; settings.autoTyping = false; }
+        const panel = `⚙️ *SETTINGS*\n\nOnline: ${settings.alwaysOnline ? '✅' : '❌'}\nStatus Seen: ${settings.autoStatusSeen ? '✅' : '❌'}\nAnti Delete: ${settings.antiDelete ? '✅' : '❌'}\nTyping: ${settings.autoTyping ? '✅' : '❌'}\nRecording: ${settings.autoRecording ? '✅' : '❌'}`;
+        await sock.sendMessage(from, { text: panel }, { quoted: msg });
         break;
       }
-
-      // 8. Calculator
       case 'calc': {
         try {
-          const exp = args.join(' ');
-          if (!exp || /[^0-9+\-*/(). ]/.test(exp)) throw new Error();
-          const ans = Function(`'use strict'; return (${exp})`)();
-          await sock.sendMessage(from, { text: `🧮 *Answer:* ${ans}` });
+          const res = Function(`'use strict'; return (${args.join(' ')})`)();
+          await sock.sendMessage(from, { text: `🧮 Result: ${res}` });
         } catch {
-          await sock.sendMessage(from, { text: '❌ Invalid expression. Example: .calc 50*2' });
+          await sock.sendMessage(from, { text: '❌ Invalid Math' });
         }
         break;
       }
-
-      // 9. Say (Echo)
       case 'say': {
-        const text = args.join(' ');
-        if (text) await sock.sendMessage(from, { text });
+        await sock.sendMessage(from, { text: args.join(' ') });
         break;
       }
-
-      // 10. Quote
       case 'quote': {
-        const quotes = [
-          'Believe you can and you are halfway there.',
-          'Quality is not an act, it is a habit.',
-          'Your time is limited, do not waste it living someone else\'s life.'
-        ];
-        await sock.sendMessage(from, { text: `💬 ${quotes[Math.floor(Math.random() * quotes.length)]}` });
+        await sock.sendMessage(from, { text: '💬 "Never give up on your dreams."' });
         break;
       }
-
-      // 11. Joke
       case 'joke': {
-        const jokes = [
-          'Why do programmers prefer dark mode? Because light attracts bugs!',
-          'There are 10 types of people: those who understand binary, and those who do not.',
-          'A SQL query walks into a bar and asks: "Can I join you?"'
-        ];
-        await sock.sendMessage(from, { text: `😄 ${jokes[Math.floor(Math.random() * jokes.length)]}` });
+        await sock.sendMessage(from, { text: '😄 Why do programmers prefer dark mode? Because light attracts bugs!' });
         break;
       }
     }
@@ -283,25 +203,51 @@ async function initBot() {
   return sock;
 }
 
-// Pair Web API Endpoint
+// Pairing Endpoint (SSE Stream)
 app.get('/pair', async (req, res) => {
   const number = req.query.number;
-  if (!number) return res.status(400).json({ error: 'Phone number required' });
+  if (!number) return res.status(400).json({ error: 'Number required' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
 
   try {
     if (!sock) await initBot();
+
     if (sock.authState?.creds?.registered) {
-      return res.json({ error: 'Already registered! Clear session in Firebase if you want to re-pair.' });
+      res.write(`data: ${JSON.stringify({ error: 'Already registered!' })}\n\n`);
+      return res.end();
     }
+
     const code = await sock.requestPairingCode(number);
-    return res.json({ code });
+    res.write(`data: ${JSON.stringify({ code })}\n\n`);
+
+    const checkConnect = setInterval(async () => {
+      if (sock?.authState?.creds?.registered) {
+        clearInterval(checkConnect);
+        await saveSessionToFirebase(SESSION_PATH);
+        res.write(`data: ${JSON.stringify({ status: 'connected' })}\n\n`);
+        res.end();
+      }
+    }, 2000);
+
+    setTimeout(() => {
+      clearInterval(checkConnect);
+      res.end();
+    }, 55000);
+
   } catch (err) {
-    console.error('Pairing error:', err);
-    return res.status(500).json({ error: 'Failed to request pairing code' });
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
   }
 });
 
 app.listen(PORT, async () => {
-  console.log(`Server started on port ${PORT}`);
-  await initBot();
+  console.log(`Server listening on port ${PORT}`);
+  if (!process.env.VERCEL) {
+    await initBot();
+  }
 });
+
+module.exports = app;
