@@ -3,61 +3,76 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WhatsApp Bot Pairing</title>
+  <title>WhatsApp Bot Pairing Web</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b141a; color: #e9edef; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .box { background: #111b21; padding: 2.5rem; border-radius: 16px; width: 100%; max-width: 380px; box-shadow: 0 12px 30px rgba(0,0,0,0.5); text-align: center; border: 1px solid #202c33; }
-    h2 { margin-top: 0; color: #00a884; }
+    .box { background: #111b21; padding: 2rem; border-radius: 16px; width: 90%; max-width: 380px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); text-align: center; border: 1px solid #202c33; }
+    h2 { color: #00a884; margin-top: 0; }
     p { font-size: 14px; color: #8696a0; margin-bottom: 20px; }
     input { width: 100%; padding: 14px; margin-bottom: 15px; border-radius: 8px; border: 1px solid #2a3942; background: #202c33; color: #fff; box-sizing: border-box; font-size: 16px; outline: none; }
     input:focus { border-color: #00a884; }
-    button { width: 100%; padding: 14px; border: none; border-radius: 8px; background: #00a884; color: #111b21; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.2s; }
-    button:hover { background: #02906f; }
+    button { width: 100%; padding: 14px; border: none; border-radius: 8px; background: #00a884; color: #111b21; font-weight: bold; cursor: pointer; font-size: 16px; }
     button:disabled { background: #3b4a54; color: #8696a0; cursor: not-allowed; }
     .result { margin-top: 20px; padding: 15px; background: #202c33; border-radius: 8px; border: 1px dashed #00a884; font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #25d366; display: none; }
-    .status { margin-top: 10px; font-size: 13px; color: #ffd279; }
+    .status { margin-top: 15px; font-size: 14px; color: #ffd279; }
+    .success { color: #25d366; font-weight: bold; }
   </style>
 </head>
 <body>
   <div class="box">
-    <h2>WhatsApp Pair</h2>
+    <h2>WhatsApp Pair Web</h2>
     <p>Enter phone number with country code without + (e.g. 94712345678)</p>
-    <input type="text" id="phone" placeholder="9477xxxxxxx" />
-    <button id="btn" onclick="submitPair()">Get Pairing Code</button>
+    <input type="text" id="phone" placeholder="947xxxxxxxx" />
+    <button id="btn" onclick="startPairing()">Get Pairing Code</button>
     <div id="code" class="result"></div>
     <div id="status" class="status"></div>
   </div>
 
   <script>
-    async function submitPair() {
+    function startPairing() {
       const phone = document.getElementById('phone').value.trim().replace(/[^0-9]/g, '');
       const btn = document.getElementById('btn');
       const codeBox = document.getElementById('code');
       const status = document.getElementById('status');
 
-      if (!phone) return alert('Please enter your phone number');
+      if (!phone) return alert('Enter a valid phone number');
 
       btn.disabled = true;
-      btn.innerText = 'Requesting Code...';
+      btn.innerText = 'Connecting...';
       codeBox.style.display = 'none';
-      status.innerText = '';
+      status.innerText = 'Requesting code from WhatsApp...';
 
-      try {
-        const res = await fetch(`/pair?number=${phone}`);
-        const data = await res.json();
+      const eventSource = new EventSource(`/pair?number=${phone}`);
+
+      eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
         if (data.code) {
           codeBox.innerText = data.code;
           codeBox.style.display = 'block';
-          status.innerText = 'Go to WhatsApp > Linked Devices > Link with phone number and enter this code!';
-        } else {
-          alert(data.error || 'Failed to get code');
+          status.innerText = '👉 Enter this code on WhatsApp > Linked Devices > Link with phone number';
+          btn.innerText = 'Waiting for phone...';
         }
-      } catch (e) {
-        alert('Server connection error. Ensure bot is running.');
-      } finally {
+
+        if (data.status === 'connected') {
+          status.innerHTML = '<span class="success">🎉 WhatsApp Connected & Synced to Firebase! You can close this tab now.</span>';
+          btn.innerText = 'Connected!';
+          eventSource.close();
+        }
+
+        if (data.error) {
+          alert(data.error);
+          eventSource.close();
+          btn.disabled = false;
+          btn.innerText = 'Get Pairing Code';
+        }
+      };
+
+      eventSource.onerror = function() {
+        eventSource.close();
         btn.disabled = false;
         btn.innerText = 'Get Pairing Code';
-      }
+      };
     }
   </script>
 </body>
