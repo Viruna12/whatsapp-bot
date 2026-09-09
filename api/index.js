@@ -6,7 +6,7 @@ const admin = require('firebase-admin');
 
 const app = express();
 
-// Firebase Setup
+// Firebase Init
 let serviceAccount = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
@@ -32,7 +32,7 @@ if (serviceAccount && dbUrl && !admin.apps.length) {
   }
 }
 
-// 1. Web UI
+// 1. Web UI (Pairing Page)
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
@@ -40,72 +40,94 @@ app.get('/', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WhatsApp Web QR Scan</title>
+  <title>WhatsApp Pairing Code</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b141a; color: #e9edef; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
     .card { background: #111b21; padding: 2.5rem; border-radius: 16px; width: 90%; max-width: 380px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); text-align: center; border: 1px solid #202c33; }
-    h2 { color: #00a884; margin: 0 0 10px 0; }
-    p { font-size: 14px; color: #8696a0; margin-bottom: 25px; line-height: 1.4; }
-    .qr-box { background: #fff; padding: 15px; border-radius: 12px; display: inline-block; min-width: 240px; min-height: 240px; box-sizing: border-box; }
-    #qr-img { width: 230px; height: 230px; display: none; }
-    #spinner { color: #111b21; font-weight: bold; margin-top: 100px; font-size: 15px; }
-    .status { margin-top: 20px; font-size: 15px; color: #ffd279; }
-    .success { color: #25d366; font-size: 18px; font-weight: bold; }
+    h2 { color: #00a884; margin-top: 0; }
+    p { font-size: 14px; color: #8696a0; margin-bottom: 20px; line-height: 1.4; }
+    input { width: 100%; padding: 14px; margin-bottom: 15px; border-radius: 8px; border: 1px solid #2a3942; background: #202c33; color: #fff; box-sizing: border-box; font-size: 16px; outline: none; text-align: center; font-weight: bold; }
+    input:focus { border-color: #00a884; }
+    button { width: 100%; padding: 14px; border: none; border-radius: 8px; background: #00a884; color: #111b21; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.2s; }
+    button:hover { background: #02906f; }
+    button:disabled { background: #3b4a54; color: #8696a0; cursor: not-allowed; }
+    .code-box { margin-top: 20px; padding: 15px; background: #202c33; border-radius: 8px; border: 1px dashed #00a884; font-size: 26px; font-weight: bold; letter-spacing: 5px; color: #25d366; display: none; }
+    .status { margin-top: 15px; font-size: 14px; color: #ffd279; line-height: 1.4; }
+    .success { color: #25d366; font-size: 17px; font-weight: bold; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>Scan WhatsApp QR</h2>
-    <p>Open WhatsApp > Settings > Linked Devices > <b>Link a Device</b> and scan this QR code.</p>
+    <h2>WhatsApp Pair Code</h2>
+    <p>Enter your phone number with country code (e.g. <b>94773796358</b>)</p>
     
-    <div class="qr-box">
-      <div id="spinner">Loading QR Code...</div>
-      <img id="qr-img" src="" alt="QR Code" />
-    </div>
-
-    <div id="status" class="status">Connecting to WhatsApp...</div>
+    <input type="text" id="phone" placeholder="947xxxxxxxx" value="94773796358" />
+    <button id="btn" onclick="startPairing()">Get Pairing Code</button>
+    
+    <div id="code" class="code-box"></div>
+    <div id="status" class="status"></div>
   </div>
 
   <script>
-    const qrImg = document.getElementById('qr-img');
-    const spinner = document.getElementById('spinner');
-    const status = document.getElementById('status');
+    function startPairing() {
+      const phone = document.getElementById('phone').value.trim().replace(/[^0-9]/g, '');
+      const btn = document.getElementById('btn');
+      const codeBox = document.getElementById('code');
+      const status = document.getElementById('status');
 
-    const evt = new EventSource('/qr-stream');
+      if (!phone) return alert('Enter a valid phone number');
 
-    evt.onmessage = function(e) {
-      const data = JSON.parse(e.data);
+      btn.disabled = true;
+      btn.innerText = 'Connecting to WhatsApp...';
+      codeBox.style.display = 'none';
+      status.innerText = '⏳ Connecting and requesting notification...';
 
-      if (data.qr) {
-        qrImg.src = data.qr;
-        qrImg.style.display = 'block';
-        spinner.style.display = 'none';
-        status.innerText = '👉 Scan the QR code now with WhatsApp!';
-      }
+      const evt = new EventSource('/pair-stream?number=' + phone);
 
-      if (data.connected) {
-        document.querySelector('.qr-box').style.display = 'none';
-        status.innerHTML = '<span class="success">🎉 WhatsApp Connected & Synced to Firebase! You can close this tab.</span>';
+      evt.onmessage = function(e) {
+        const data = JSON.parse(e.data);
+
+        if (data.code) {
+          codeBox.innerText = data.code;
+          codeBox.style.display = 'block';
+          btn.innerText = 'Waiting for your approval...';
+          status.innerHTML = '🔔 <b>Check your Phone!</b><br>Tap the WhatsApp notification or enter this code in <b>Linked Devices > Link with phone number</b>.';
+        }
+
+        if (data.connected) {
+          status.innerHTML = '<span class="success">🎉 WhatsApp Connected & Synced to Firebase! You are all set!</span>';
+          btn.innerText = 'Connected!';
+          evt.close();
+        }
+
+        if (data.error) {
+          alert('Error: ' + data.error);
+          status.innerText = 'Failed: ' + data.error;
+          btn.disabled = false;
+          btn.innerText = 'Try Again';
+          evt.close();
+        }
+      };
+
+      evt.onerror = function() {
+        status.innerText = 'Connection timed out or closed. Please try again.';
+        btn.disabled = false;
+        btn.innerText = 'Get Pairing Code';
         evt.close();
-      }
-
-      if (data.error) {
-        status.innerText = 'Error: ' + data.error;
-        evt.close();
-      }
-    };
-
-    evt.onerror = function() {
-      status.innerText = 'Connection lost. Please refresh the page.';
-      evt.close();
-    };
+      };
+    }
   </script>
 </body>
 </html>`);
 });
 
-// 2. Fast QR Stream
-app.get('/qr-stream', async (req, res) => {
+// 2. Realtime Pairing Stream (Notification Fix)
+app.get('/pair-stream', async (req, res) => {
+  const number = req.query.number;
+  if (!number) return res.status(400).json({ error: 'Phone number required' });
+
+  const cleanNumber = number.replace(/[^0-9]/g, '');
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -120,8 +142,6 @@ app.get('/qr-stream', async (req, res) => {
       DisconnectReason
     } = await import('@whiskeysockets/baileys');
 
-    const QRCode = (await import('qrcode')).default;
-
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
 
@@ -130,24 +150,28 @@ app.get('/qr-stream', async (req, res) => {
       logger: pino({ level: 'silent' }),
       printQRInTerminal: false,
       auth: state,
-      browser: ['Mac OS', 'Chrome', '130.0.6723.70'], // අලුත්ම Browser Header
-      syncFullHistory: false, // 🚀 වැදගත්ම දේ: Chats sync නොකර ක්ෂණිකව Login කරවයි
+      browser: ['Ubuntu', 'Chrome', '124.0.0.0'], // WhatsApp notification trigger කරන standard browser header එක
+      syncFullHistory: false,
       markOnlineOnConnect: false
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, qr, lastDisconnect } = update;
-
-      if (qr) {
-        try {
-          const qrDataUrl = await QRCode.toDataURL(qr);
-          res.write(`data: ${JSON.stringify({ qr: qrDataUrl })}\n\n`);
-        } catch (err) {
-          console.error('QR Error:', err);
+    // Socket handshake එක වෙන්න තත්පර 2.5ක් ඉඳලා request කිරීමෙන් Phone එකට Notification එක trigger වේ!
+    setTimeout(async () => {
+      try {
+        if (!sock.authState?.creds?.registered) {
+          const code = await sock.requestPairingCode(cleanNumber);
+          res.write(`data: ${JSON.stringify({ code })}\n\n`);
         }
+      } catch (err) {
+        console.error('Pairing Code Request Error:', err);
+        res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
       }
+    }, 2500);
+
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect } = update;
 
       if (connection === 'open') {
         if (admin.apps.length) {
@@ -159,7 +183,7 @@ app.get('/qr-stream', async (req, res) => {
               updates[Buffer.from(file).toString('hex')] = content;
             }
             await admin.database().ref('whatsapp_session').set(updates);
-            console.log('Session successfully synced to Firebase!');
+            console.log('Session synced to Firebase successfully!');
           } catch (e) {
             console.error('Firebase save error:', e);
           }
@@ -180,8 +204,8 @@ app.get('/qr-stream', async (req, res) => {
 
     setTimeout(() => res.end(), 55000);
 
-  } catch (error) {
-    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+  } catch (err) {
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     res.end();
   }
 });
