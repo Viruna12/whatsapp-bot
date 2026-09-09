@@ -2,12 +2,14 @@ const pino = require('pino');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 const { restoreSession, saveSessionToFirebase } = require('./firebase-session');
 
 const PREFIX = '.';
 const startTime = Date.now();
 const SESSION_PATH = './session';
 
+// Global Bot Settings
 let settings = {
   alwaysOnline: true,
   autoStatusSeen: true,
@@ -23,7 +25,6 @@ async function startBot() {
   console.log('⏳ Restoring session from Firebase...');
   await restoreSession(SESSION_PATH);
 
-  // Dynamic Baileys Import (ERR_REQUIRE_ESM Fix)
   const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -40,7 +41,7 @@ async function startBot() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     auth: state,
-    browser: ['Ubuntu', 'Chrome', '20.0.04']
+    browser: ['Ubuntu', 'Chrome', '124.0.0.0']
   });
 
   sock.ev.on('creds.update', async () => {
@@ -59,13 +60,30 @@ async function startBot() {
       }
     } else if (connection === 'open') {
       console.log('🚀 WhatsApp Bot is Online and Active!');
+
+      // Always Online Status
       if (settings.alwaysOnline) {
         await sock.sendPresenceUpdate('available');
+      }
+
+      // Auto Bot Connected Notification to Owner/Self chat
+      try {
+        const myJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+        await sock.sendMessage(myJid, {
+          text: `🤖 *BOT CONNECTED SUCCESSFULLY!*\n\n` +
+            `⚡ *Prefix:* \`${PREFIX}\`\n` +
+            `🟢 *Status:* Online (24/7 Active)\n` +
+            `🛡️ *Anti-Delete:* ${settings.antiDelete ? 'ON' : 'OFF'}\n` +
+            `👁️ *Auto Status Seen:* ${settings.autoStatusSeen ? 'ON' : 'OFF'}\n\n` +
+            `_Type *${PREFIX}menu* to explore all commands!_`
+        });
+      } catch (err) {
+        console.error('Failed to send connect notification:', err.message);
       }
     }
   });
 
-  // Message Events (Features + Anti-delete + 10 Commands)
+  // Message Events
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
     const msg = messages[0];
@@ -86,7 +104,7 @@ async function startBot() {
       messageCache.delete(oldestKey);
     }
 
-    // 2. Anti-Delete Recovery
+    // 2. Anti-Delete Message Recovery
     if (msg.message.protocolMessage && msg.message.protocolMessage.type === 0) {
       if (settings.antiDelete) {
         const deletedKey = msg.message.protocolMessage.key;
@@ -107,54 +125,179 @@ async function startBot() {
       return;
     }
 
-    if (msg.key.fromMe) return;
+    const body =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      '';
 
-    // 3. Auto Typing / Recording Presence
+    // 🚀 SELF & INBOX FIX:
+    // Allows commands in "Message Yourself" while avoiding bot infinite loops!
+    if (msg.key.fromMe && !body.startsWith(PREFIX)) return;
+
+    // Auto Typing or Recording Presence
     if (settings.autoTyping) await sock.sendPresenceUpdate('composing', from);
     else if (settings.autoRecording) await sock.sendPresenceUpdate('recording', from);
 
-    const body = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
     if (!body.startsWith(PREFIX)) return;
     const args = body.slice(PREFIX.length).trim().split(/ +/);
     const cmd = args.shift().toLowerCase();
+    const query = args.join(' ');
 
-    // 10 Core Commands
+    // ----------------------------------------
+    // COMMANDS ENGINE
+    // ----------------------------------------
     switch (cmd) {
+      // 1. Menu
       case 'menu':
       case 'help': {
-        const text = `🤖 *MINI BOT MENU*\n\n` +
-          `🔹 *${PREFIX}ping* - Speed test\n` +
-          `🔹 *${PREFIX}alive* - Status\n` +
-          `🔹 *${PREFIX}runtime* - Uptime\n` +
-          `🔹 *${PREFIX}system* - System stats\n` +
-          `🔹 *${PREFIX}settings* - Toggle features\n` +
-          `🔹 *${PREFIX}vv* - Recover View Once\n` +
-          `🔹 *${PREFIX}calc <math>* - Calculator\n` +
-          `🔹 *${PREFIX}say <text>* - Echo text\n` +
-          `🔹 *${PREFIX}quote* - Motivation\n` +
-          `🔹 *${PREFIX}joke* - Random joke`;
-        await sock.sendMessage(from, { text }, { quoted: msg });
+        const menuText =
+          `╭━━━〔 *MINI BOT MENU* 〕━━━╮\n` +
+          `┃ 👤 *Owner:* Viruna Randinu\n` +
+          `┃ ⚡ *Prefix:* ${PREFIX}\n` +
+          `┃ ⏱️ *Runtime:* ${Math.floor((Date.now() - startTime) / 60000)}m\n` +
+          `╰━━━━━━━━━━━━━━━━━━━━╯\n\n` +
+          `╭━━〔 📥 *DOWNLOADERS* 〕━━╮\n` +
+          `┃ 🔹 *${PREFIX}song <title>* - Download Song\n` +
+          `┃ 🔹 *${PREFIX}video <title>* - Download Video\n` +
+          `┃ 🔹 *${PREFIX}vv* - Recover View Once\n` +
+          `╰━━━━━━━━━━━━━━━━━━━━╯\n\n` +
+          `╭━━〔 🤖 *AI & SEARCH* 〕━━╮\n` +
+          `┃ 🔹 *${PREFIX}ai <question>* - Ask Gemini/GPT\n` +
+          `┃ 🔹 *${PREFIX}news* - Latest Headlines\n` +
+          `┃ 🔹 *${PREFIX}calc <math>* - Calculator\n` +
+          `┃ 🔹 *${PREFIX}tts <text>* - Voice message\n` +
+          `╰━━━━━━━━━━━━━━━━━━━━╯\n\n` +
+          `╭━━〔 ⚙️ *BOT SETTINGS* 〕━━╮\n` +
+          `┃ 🔹 *${PREFIX}settings* - Panel\n` +
+          `┃ 🔹 *${PREFIX}ping* - Speed test\n` +
+          `┃ 🔹 *${PREFIX}alive* - Status\n` +
+          `┃ 🔹 *${PREFIX}system* - RAM & Stats\n` +
+          `┃ 🔹 *${PREFIX}owner* - Creator Card\n` +
+          `╰━━━━━━━━━━━━━━━━━━━━╯\n\n` +
+          `╭━━〔 🎭 *FUN & MISC* 〕━━╮\n` +
+          `┃ 🔹 *${PREFIX}joke* - Random joke\n` +
+          `┃ 🔹 *${PREFIX}quote* - Motivation\n` +
+          `┃ 🔹 *${PREFIX}say <text>* - Echo text\n` +
+          `╰━━━━━━━━━━━━━━━━━━━━╯`;
+        await sock.sendMessage(from, { text: menuText }, { quoted: msg });
         break;
       }
+
+      // 2. Ping
       case 'ping': {
         const latency = Date.now() - (msg.messageTimestamp * 1000 || Date.now());
-        await sock.sendMessage(from, { text: `⚡ Speed: ${Math.abs(latency)}ms` }, { quoted: msg });
+        await sock.sendMessage(from, { text: `⚡ *Speed:* ${Math.abs(latency)}ms` }, { quoted: msg });
         break;
       }
+
+      // 3. Alive
       case 'alive': {
-        await sock.sendMessage(from, { text: '🟢 *Bot is Active and Connected!*' }, { quoted: msg });
+        await sock.sendMessage(from, {
+          text: `🟢 *Bot is Fully Active and Running at Max Speed!*\n\n• Always Online: ${settings.alwaysOnline ? '✅' : '❌'}\n• Status Seen: ${settings.autoStatusSeen ? '✅' : '❌'}`
+        }, { quoted: msg });
         break;
       }
-      case 'runtime': {
-        const sec = Math.floor((Date.now() - startTime) / 1000);
-        await sock.sendMessage(from, { text: `⏱️ Uptime: ${Math.floor(sec / 60)} minutes` }, { quoted: msg });
+
+      // 4. AI Chatbot
+      case 'ai':
+      case 'gpt': {
+        if (!query) return sock.sendMessage(from, { text: `Please provide a question: *${PREFIX}ai what is quantum computing?*` }, { quoted: msg });
+        await sock.sendMessage(from, { react: { text: '🧠', key: msg.key } });
+        try {
+          const res = await axios.get(`https://text.pollinations.ai/${encodeURIComponent(query)}?model=openai`);
+          await sock.sendMessage(from, { text: `🤖 *AI:* ${res.data}` }, { quoted: msg });
+        } catch (e) {
+          await sock.sendMessage(from, { text: '❌ AI server is busy, try again.' }, { quoted: msg });
+        }
         break;
       }
-      case 'system': {
-        const free = (os.freemem() / (1024 * 1024)).toFixed(0);
-        await sock.sendMessage(from, { text: `💻 Free RAM: ${free}MB` }, { quoted: msg });
+
+      // 5. Song Downloader (.song)
+      case 'song':
+      case 'play': {
+        if (!query) return sock.sendMessage(from, { text: `Enter song title: *${PREFIX}song shape of you*` }, { quoted: msg });
+        await sock.sendMessage(from, { react: { text: '🎵', key: msg.key } });
+        try {
+          const apiRes = await axios.get(`https://api.vreden.my.id/api/ytplaymp3?query=${encodeURIComponent(query)}`);
+          const data = apiRes.data?.result;
+          if (data && data.download?.url) {
+            await sock.sendMessage(from, {
+              audio: { url: data.download.url },
+              mimetype: 'audio/mp4',
+              fileName: `${data.title}.mp3`
+            }, { quoted: msg });
+          } else {
+            await sock.sendMessage(from, { text: '❌ Song download link not found.' }, { quoted: msg });
+          }
+        } catch (e) {
+          await sock.sendMessage(from, { text: '❌ Failed to fetch song. API may be rate limited.' }, { quoted: msg });
+        }
         break;
       }
+
+      // 6. Video Downloader (.video)
+      case 'video':
+      case 'ytv': {
+        if (!query) return sock.sendMessage(from, { text: `Enter video title: *${PREFIX}video funny cats*` }, { quoted: msg });
+        await sock.sendMessage(from, { react: { text: '🎬', key: msg.key } });
+        try {
+          const apiRes = await axios.get(`https://api.vreden.my.id/api/ytplaymp4?query=${encodeURIComponent(query)}`);
+          const data = apiRes.data?.result;
+          if (data && data.download?.url) {
+            await sock.sendMessage(from, {
+              video: { url: data.download.url },
+              caption: `🎥 *${data.title}*`
+            }, { quoted: msg });
+          } else {
+            await sock.sendMessage(from, { text: '❌ Video download link not found.' }, { quoted: msg });
+          }
+        } catch (e) {
+          await sock.sendMessage(from, { text: '❌ Failed to fetch video.' }, { quoted: msg });
+        }
+        break;
+      }
+
+      // 7. News (.news)
+      case 'news': {
+        await sock.sendMessage(from, { react: { text: '📰', key: msg.key } });
+        try {
+          const newsRes = await axios.get('https://inshortsapi.vercel.app/news?category=technology');
+          const articles = newsRes.data?.data?.slice(0, 4) || [];
+          let text = `📰 *LATEST TECH HEADLINES*\n\n`;
+          articles.forEach((a, i) => {
+            text += `*${i + 1}. ${a.title}*\n${a.content}\n\n`;
+          });
+          await sock.sendMessage(from, { text }, { quoted: msg });
+        } catch {
+          await sock.sendMessage(from, { text: '❌ Could not retrieve news headlines right now.' }, { quoted: msg });
+        }
+        break;
+      }
+
+      // 8. Text to Speech (.tts)
+      case 'tts': {
+        if (!query) return sock.sendMessage(from, { text: `Provide text: *${PREFIX}tts Hello my friend*` }, { quoted: msg });
+        const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(query)}&tl=si&client=tw-ob`;
+        await sock.sendMessage(from, { audio: { url: ttsUrl }, mimetype: 'audio/mp4', ptt: true }, { quoted: msg });
+        break;
+      }
+
+      // 9. Owner Info (.owner)
+      case 'owner': {
+        const vcard =
+          'BEGIN:VCARD\n' +
+          'VERSION:3.0\n' +
+          'FN:Viruna Randinu\n' +
+          'ORG:Bot Developer\n' +
+          'TEL;type=CELL;type=VOICE;waid=94773796358:+94 77 379 6358\n' +
+          'END:VCARD';
+        await sock.sendMessage(from, {
+          contacts: { displayName: 'Viruna Randinu', contacts: [{ vcard }] }
+        }, { quoted: msg });
+        break;
+      }
+
+      // 10. View Once Recovery (.vv)
       case 'vv': {
         const q = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
         const vo = q?.viewOnceMessageV2?.message || q?.viewOnceMessage?.message;
@@ -167,41 +310,93 @@ async function startBot() {
         else if (type === 'videoMessage') await sock.sendMessage(from, { video: buf, caption: '🔓 *View Once Recovered*' }, { quoted: msg });
         break;
       }
-      case 'settings': {
+
+      // 11. Settings Panel (.settings)
+      case 'settings':
+      case 'setting': {
         const opt = args[0]?.toLowerCase();
-        if (opt === 'online') settings.alwaysOnline = !settings.alwaysOnline;
-        else if (opt === 'status') settings.autoStatusSeen = !settings.autoStatusSeen;
-        else if (opt === 'antidelete') settings.antiDelete = !settings.antiDelete;
-        else if (opt === 'typing') { settings.autoTyping = !settings.autoTyping; settings.autoRecording = false; }
-        else if (opt === 'recording') { settings.autoRecording = !settings.autoRecording; settings.autoTyping = false; }
-        const panel = `⚙️ *SETTINGS*\n\nOnline: ${settings.alwaysOnline ? '✅' : '❌'}\nStatus Seen: ${settings.autoStatusSeen ? '✅' : '❌'}\nAnti Delete: ${settings.antiDelete ? '✅' : '❌'}\nTyping: ${settings.autoTyping ? '✅' : '❌'}\nRecording: ${settings.autoRecording ? '✅' : '❌'}`;
-        await sock.sendMessage(from, { text: panel }, { quoted: msg });
-        break;
-      }
-      case 'calc': {
-        try {
-          const res = Function(`'use strict'; return (${args.join(' ')})`)();
-          await sock.sendMessage(from, { text: `🧮 Result: ${res}` });
-        } catch {
-          await sock.sendMessage(from, { text: '❌ Invalid Math' });
+        if (opt === 'online') {
+          settings.alwaysOnline = !settings.alwaysOnline;
+          await sock.sendPresenceUpdate(settings.alwaysOnline ? 'available' : 'unavailable');
+          await sock.sendMessage(from, { text: `Always Online: *${settings.alwaysOnline ? 'ON' : 'OFF'}*` });
+        } else if (opt === 'status') {
+          settings.autoStatusSeen = !settings.autoStatusSeen;
+          await sock.sendMessage(from, { text: `Auto Status Seen: *${settings.autoStatusSeen ? 'ON' : 'OFF'}*` });
+        } else if (opt === 'antidelete') {
+          settings.antiDelete = !settings.antiDelete;
+          await sock.sendMessage(from, { text: `Anti-Delete: *${settings.antiDelete ? 'ON' : 'OFF'}*` });
+        } else if (opt === 'typing') {
+          settings.autoTyping = !settings.autoTyping;
+          settings.autoRecording = false;
+          await sock.sendMessage(from, { text: `Auto Typing: *${settings.autoTyping ? 'ON' : 'OFF'}*` });
+        } else if (opt === 'recording') {
+          settings.autoRecording = !settings.autoRecording;
+          settings.autoTyping = false;
+          await sock.sendMessage(from, { text: `Auto Recording: *${settings.autoRecording ? 'ON' : 'OFF'}*` });
+        } else {
+          const panel =
+            `⚙️ *BOT SETTINGS PANEL*\n\n` +
+            `• *Always Online:* ${settings.alwaysOnline ? '✅ ON' : '❌ OFF'} (\`${PREFIX}settings online\`)\n` +
+            `• *Status Seen:* ${settings.autoStatusSeen ? '✅ ON' : '❌ OFF'} (\`${PREFIX}settings status\`)\n` +
+            `• *Anti Delete:* ${settings.antiDelete ? '✅ ON' : '❌ OFF'} (\`${PREFIX}settings antidelete\`)\n` +
+            `• *Auto Typing:* ${settings.autoTyping ? '✅ ON' : '❌ OFF'} (\`${PREFIX}settings typing\`)\n` +
+            `• *Auto Recording:* ${settings.autoRecording ? '✅ ON' : '❌ OFF'} (\`${PREFIX}settings recording\`)`;
+          await sock.sendMessage(from, { text: panel }, { quoted: msg });
         }
         break;
       }
+
+      // 12. System & Runtime
+      case 'system': {
+        const free = (os.freemem() / (1024 * 1024)).toFixed(0);
+        const total = (os.totalmem() / (1024 * 1024)).toFixed(0);
+        await sock.sendMessage(from, {
+          text: `💻 *SYSTEM INFO*\n• Platform: ${os.platform()}\n• Free Memory: ${free}MB / ${total}MB`
+        }, { quoted: msg });
+        break;
+      }
+
+      // 13. Calculator
+      case 'calc': {
+        try {
+          const res = Function(`'use strict'; return (${query})`)();
+          await sock.sendMessage(from, { text: `🧮 *Result:* ${res}` }, { quoted: msg });
+        } catch {
+          await sock.sendMessage(from, { text: '❌ Invalid Math expression.' }, { quoted: msg });
+        }
+        break;
+      }
+
+      // 14. Say
       case 'say': {
-        await sock.sendMessage(from, { text: args.join(' ') });
+        if (query) await sock.sendMessage(from, { text: query });
         break;
       }
-      case 'quote': {
-        await sock.sendMessage(from, { text: '💬 "Never give up on your dreams."' });
-        break;
-      }
+
+      // 15. Joke
       case 'joke': {
-        await sock.sendMessage(from, { text: '😄 Why do programmers prefer dark mode? Because light attracts bugs!' });
+        const jokes = [
+          'Why do programmers prefer dark mode? Because light attracts bugs!',
+          'There are 10 types of people: those who understand binary, and those who do not.',
+          'A SQL query walks into a bar, walks up to two tables and asks: "Can I join you?"',
+          'Software developers: Turning coffee into code since 1995.'
+        ];
+        await sock.sendMessage(from, { text: `😄 ${jokes[Math.floor(Math.random() * jokes.length)]}` }, { quoted: msg });
+        break;
+      }
+
+      // 16. Quote
+      case 'quote': {
+        const quotes = [
+          '“The secret of getting ahead is getting started.” — Mark Twain',
+          '“It always seems impossible until it’s done.” — Nelson Mandela',
+          '“Don’t let yesterday take up too much of today.” — Will Rogers'
+        ];
+        await sock.sendMessage(from, { text: `💬 ${quotes[Math.floor(Math.random() * quotes.length)]}` }, { quoted: msg });
         break;
       }
     }
   });
 }
 
-// GitHub Actions මඟින් `npm start` කළ විට bot run වේ
 startBot();
