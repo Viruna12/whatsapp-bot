@@ -6,7 +6,7 @@ const admin = require('firebase-admin');
 
 const app = express();
 
-// Firebase Init
+// Firebase Setup
 let serviceAccount = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
@@ -32,7 +32,27 @@ if (serviceAccount && dbUrl && !admin.apps.length) {
   }
 }
 
-// 1. Web UI (Pairing Page)
+// Session එක Firebase එකට Save කරන Function එක
+async function syncSessionToFirebase(sessionPath) {
+  if (admin.apps.length && fs.existsSync(sessionPath)) {
+    try {
+      const files = fs.readdirSync(sessionPath);
+      const updates = {};
+      for (const file of files) {
+        const content = fs.readFileSync(path.join(sessionPath, file), 'utf-8');
+        updates[Buffer.from(file).toString('hex')] = content;
+      }
+      await admin.database().ref('whatsapp_session').set(updates);
+      console.log('✅ Session successfully saved to Firebase!');
+      return true;
+    } catch (e) {
+      console.error('Firebase save error:', e.message);
+    }
+  }
+  return false;
+}
+
+// 1. Web UI
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
@@ -59,7 +79,7 @@ app.get('/', (req, res) => {
 <body>
   <div class="card">
     <h2>WhatsApp Pair Code</h2>
-    <p>Enter your phone number with country code (e.g. <b>94773796358</b>)</p>
+    <p>Enter your phone number with country code</p>
     
     <input type="text" id="phone" placeholder="947xxxxxxxx" value="94773796358" />
     <button id="btn" onclick="startPairing()">Get Pairing Code</button>
@@ -78,9 +98,9 @@ app.get('/', (req, res) => {
       if (!phone) return alert('Enter a valid phone number');
 
       btn.disabled = true;
-      btn.innerText = 'Connecting to WhatsApp...';
+      btn.innerText = 'Connecting...';
       codeBox.style.display = 'none';
-      status.innerText = '⏳ Connecting and requesting notification...';
+      status.innerText = '⏳ Requesting code and notification...';
 
       const evt = new EventSource('/pair-stream?number=' + phone);
 
@@ -90,8 +110,12 @@ app.get('/', (req, res) => {
         if (data.code) {
           codeBox.innerText = data.code;
           codeBox.style.display = 'block';
-          btn.innerText = 'Waiting for your approval...';
-          status.innerHTML = '🔔 <b>Check your Phone!</b><br>Tap the WhatsApp notification or enter this code in <b>Linked Devices > Link with phone number</b>.';
+          btn.innerText = 'Waiting for your phone...';
+          status.innerHTML = '🔔 <b>Code Generated!</b><br>Enter this code on your WhatsApp notification or Linked Devices.';
+        }
+
+        if (data.status === 'linking') {
+          status.innerHTML = '🔄 <b>Linking in progress... Completing handshake!</b>';
         }
 
         if (data.connected) {
@@ -101,8 +125,7 @@ app.get('/', (req, res) => {
         }
 
         if (data.error) {
-          alert('Error: ' + data.error);
-          status.innerText = 'Failed: ' + data.error;
+          status.innerText = 'Error: ' + data.error;
           btn.disabled = false;
           btn.innerText = 'Try Again';
           evt.close();
@@ -110,10 +133,8 @@ app.get('/', (req, res) => {
       };
 
       evt.onerror = function() {
-        status.innerText = 'Connection timed out or closed. Please try again.';
-        btn.disabled = false;
-        btn.innerText = 'Get Pairing Code';
-        evt.close();
+        // SSE reconnect වෙමින් පවතින විට error එක පෙන්නන්න එපා
+        console.log('SSE reconnecting or processing...');
       };
     }
   </script>
@@ -121,7 +142,7 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// 2. Realtime Pairing Stream (Notification Fix)
+// 2. Stream Endpoint (With 515 Reconnection)
 app.get('/pair-stream', async (req, res) => {
   const number = req.query.number;
   if (!number) return res.status(400).json({ error: 'Phone number required' });
@@ -145,19 +166,53 @@ app.get('/pair-stream', async (req, res) => {
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
 
-    const sock = makeWASocket({
-      version,
-      logger: pino({ level: 'silent' }),
-      printQRInTerminal: false,
-      auth: state,
-      browser: ['Ubuntu', 'Chrome', '124.0.0.0'], // WhatsApp notification trigger කරන standard browser header එක
-      syncFullHistory: false,
-      markOnlineOnConnect: false
-    });
+    let sock;
 
-    sock.ev.on('creds.update', saveCreds);
+    function connect() {
+      sock = makeWASocket({
+        version,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        auth: state,
+        browser: ['Ubuntu', 'Chrome', '124.0.0.0'],
+        syncFullHistory: false,
+        markOnlineOnConnect: false
+      });
 
-    // Socket handshake එක වෙන්න තත්පර 2.5ක් ඉඳලා request කිරීමෙන් Phone එකට Notification එක trigger වේ!
+      // 1. Phone එකේ code එක ගැහුව ගමන් Creds save වෙනවා සහ Firebase එකට යනවා!
+      sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        if (sock.authState?.creds?.registered) {
+          await syncSessionToFirebase(sessionPath);
+        }
+      });
+
+      sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
+
+        // 2. 515 Restart එක Handle කිරීම (Phone එකේ code එක ගහපු ගමන් මේක වෙනවා)
+        if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          if (statusCode === 515 || statusCode !== DisconnectReason.loggedOut) {
+            console.log('Handshake restart (515) - Reconnecting to finish linking...');
+            res.write(`data: ${JSON.stringify({ status: 'linking' })}\n\n`);
+            setTimeout(connect, 1000); // Auto-reconnect වී handshake සම්පූර්ණ කරයි
+            return;
+          }
+        }
+
+        // 3. සම්පූර්ණයෙන්ම Open වූ පසු Firebase එකට දමා Browser එකට Done කියයි
+        if (connection === 'open') {
+          await syncSessionToFirebase(sessionPath);
+          res.write(`data: ${JSON.stringify({ connected: true })}\n\n`);
+          res.end();
+        }
+      });
+    }
+
+    connect();
+
+    // මුල් වතාවේ Pairing Code එක ලබා ගැනීම
     setTimeout(async () => {
       try {
         if (!sock.authState?.creds?.registered) {
@@ -165,44 +220,11 @@ app.get('/pair-stream', async (req, res) => {
           res.write(`data: ${JSON.stringify({ code })}\n\n`);
         }
       } catch (err) {
-        console.error('Pairing Code Request Error:', err);
         res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
       }
     }, 2500);
 
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect } = update;
-
-      if (connection === 'open') {
-        if (admin.apps.length) {
-          try {
-            const files = fs.readdirSync(sessionPath);
-            const updates = {};
-            for (const file of files) {
-              const content = fs.readFileSync(path.join(sessionPath, file), 'utf-8');
-              updates[Buffer.from(file).toString('hex')] = content;
-            }
-            await admin.database().ref('whatsapp_session').set(updates);
-            console.log('Session synced to Firebase successfully!');
-          } catch (e) {
-            console.error('Firebase save error:', e);
-          }
-        }
-
-        res.write(`data: ${JSON.stringify({ connected: true })}\n\n`);
-        res.end();
-      }
-
-      if (connection === 'close') {
-        const isLoggedOut = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut;
-        if (isLoggedOut) {
-          res.write(`data: ${JSON.stringify({ error: 'Logged out' })}\n\n`);
-          res.end();
-        }
-      }
-    });
-
-    setTimeout(() => res.end(), 55000);
+    setTimeout(() => res.end(), 58000);
 
   } catch (err) {
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
