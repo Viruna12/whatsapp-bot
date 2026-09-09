@@ -32,7 +32,7 @@ if (serviceAccount && dbUrl && !admin.apps.length) {
   }
 }
 
-// Web UI
+// 1. Web UI
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
@@ -85,7 +85,7 @@ app.get('/', (req, res) => {
 
       if (data.connected) {
         document.querySelector('.qr-box').style.display = 'none';
-        status.innerHTML = '<span class="success">🎉 WhatsApp Connected & Synced to Firebase! You can close this window.</span>';
+        status.innerHTML = '<span class="success">🎉 WhatsApp Connected & Synced to Firebase! You can close this tab.</span>';
         evt.close();
       }
 
@@ -104,7 +104,7 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// QR Stream Endpoint
+// 2. Fast QR Stream
 app.get('/qr-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -130,7 +130,9 @@ app.get('/qr-stream', async (req, res) => {
       logger: pino({ level: 'silent' }),
       printQRInTerminal: false,
       auth: state,
-      browser: ['Ubuntu', 'Chrome', '20.0.04']
+      browser: ['Mac OS', 'Chrome', '130.0.6723.70'], // අලුත්ම Browser Header
+      syncFullHistory: false, // 🚀 වැදගත්ම දේ: Chats sync නොකර ක්ෂණිකව Login කරවයි
+      markOnlineOnConnect: false
     });
 
     sock.ev.on('creds.update', saveCreds);
