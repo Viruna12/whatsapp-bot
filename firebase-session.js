@@ -2,12 +2,13 @@ const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
 
-let serviceAccount;
+let serviceAccount = null;
+
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   } catch (e) {
-    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT env variable');
+    console.error('FIREBASE_SERVICE_ACCOUNT JSON parse error:', e.message);
   }
 } else if (fs.existsSync('./firebase-key.json')) {
   serviceAccount = require('./firebase-key.json');
@@ -15,7 +16,7 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 
 const dbUrl = process.env.FIREBASE_DB_URL || (serviceAccount && serviceAccount.databaseURL);
 
-if (serviceAccount && !admin.apps.length) {
+if (serviceAccount && dbUrl && !admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     databaseURL: dbUrl
@@ -25,47 +26,44 @@ if (serviceAccount && !admin.apps.length) {
 const db = admin.apps.length ? admin.database() : null;
 const sessionRef = db ? db.ref('whatsapp_session') : null;
 
-// Firebase එකෙන් Session Restore කිරීම
-async function restoreSession() {
+async function restoreSession(targetPath) {
   if (!sessionRef) {
-    console.log('⚠️ Firebase Database reference is not initialized.');
+    console.log('Firebase sessionRef is not available.');
     return false;
   }
-  if (!fs.existsSync('./session')) fs.mkdirSync('./session', { recursive: true });
+  if (!fs.existsSync(targetPath)) fs.mkdirSync(targetPath, { recursive: true });
 
   try {
     const snapshot = await sessionRef.once('value');
-    const sessionData = snapshot.val();
-
-    if (sessionData) {
-      for (const [key, content] of Object.entries(sessionData)) {
-        const filename = Buffer.from(key, 'hex').toString('utf-8');
-        fs.writeFileSync(path.join('./session', filename), content, 'utf-8');
+    const data = snapshot.val();
+    if (data) {
+      for (const [hexName, content] of Object.entries(data)) {
+        const filename = Buffer.from(hexName, 'hex').toString('utf-8');
+        fs.writeFileSync(path.join(targetPath, filename), content, 'utf-8');
       }
       console.log('✅ Session restored from Firebase successfully!');
       return true;
     }
   } catch (err) {
-    console.error('Firebase Restore Error:', err.message);
+    console.error('Error restoring session:', err.message);
   }
   return false;
 }
 
-// Session එක Firebase එකට Backup කිරීම
-async function saveSessionToFirebase() {
-  if (!sessionRef || !fs.existsSync('./session')) return;
+async function saveSessionToFirebase(targetPath) {
+  if (!sessionRef || !fs.existsSync(targetPath)) return;
   try {
-    const files = fs.readdirSync('./session');
+    const files = fs.readdirSync(targetPath);
     const updates = {};
     for (const filename of files) {
-      const content = fs.readFileSync(path.join('./session', filename), 'utf-8');
-      const safeKey = Buffer.from(filename).toString('hex');
-      updates[safeKey] = content;
+      const content = fs.readFileSync(path.join(targetPath, filename), 'utf-8');
+      const hexName = Buffer.from(filename).toString('hex');
+      updates[hexName] = content;
     }
     await sessionRef.set(updates);
     console.log('☁️ Session synced to Firebase successfully.');
   } catch (err) {
-    console.error('Firebase Save Error:', err.message);
+    console.error('Error saving session:', err.message);
   }
 }
 
