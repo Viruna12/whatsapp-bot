@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-mini-bot",
   "version": "1.0.0",
-  "description": "WhatsApp Fast Bot with Baileys",
+  "description": "WhatsApp Fast Bot with Vercel and GitHub Actions",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
