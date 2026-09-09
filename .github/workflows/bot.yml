@@ -3,7 +3,7 @@ name: 24-7 WhatsApp Bot Runner
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *'
+    - cron: '0 */5 * * *' # Auto re-runs every 5 hours
 
 jobs:
   run:
@@ -17,10 +17,10 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install Packages
+      - name: Install Dependencies
         run: npm install
 
-      - name: Start Bot
+      - name: Run WhatsApp Bot
         env:
           FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
