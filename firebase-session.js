@@ -7,8 +7,12 @@ let serviceAccount = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    // Vercel line breaks fix
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
   } catch (e) {
-    console.error('FIREBASE_SERVICE_ACCOUNT JSON parse error:', e.message);
+    console.error('FIREBASE_SERVICE_ACCOUNT Parse Error:', e.message);
   }
 } else if (fs.existsSync('./firebase-key.json')) {
   serviceAccount = require('./firebase-key.json');
@@ -17,20 +21,22 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 const dbUrl = process.env.FIREBASE_DB_URL || (serviceAccount && serviceAccount.databaseURL);
 
 if (serviceAccount && dbUrl && !admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    databaseURL: dbUrl
-  });
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      databaseURL: dbUrl
+    });
+    console.log('Firebase initialized successfully.');
+  } catch (e) {
+    console.error('Firebase Init Error:', e.message);
+  }
 }
 
 const db = admin.apps.length ? admin.database() : null;
 const sessionRef = db ? db.ref('whatsapp_session') : null;
 
 async function restoreSession(targetPath) {
-  if (!sessionRef) {
-    console.log('Firebase sessionRef is not available.');
-    return false;
-  }
+  if (!sessionRef) return false;
   if (!fs.existsSync(targetPath)) fs.mkdirSync(targetPath, { recursive: true });
 
   try {
@@ -41,7 +47,7 @@ async function restoreSession(targetPath) {
         const filename = Buffer.from(hexName, 'hex').toString('utf-8');
         fs.writeFileSync(path.join(targetPath, filename), content, 'utf-8');
       }
-      console.log('✅ Session restored from Firebase successfully!');
+      console.log('✅ Session restored from Firebase!');
       return true;
     }
   } catch (err) {
@@ -61,7 +67,7 @@ async function saveSessionToFirebase(targetPath) {
       updates[hexName] = content;
     }
     await sessionRef.set(updates);
-    console.log('☁️ Session synced to Firebase successfully.');
+    console.log('☁️ Session saved to Firebase!');
   } catch (err) {
     console.error('Error saving session:', err.message);
   }
